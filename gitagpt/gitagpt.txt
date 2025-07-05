@@ -1,0 +1,154 @@
+# Install required libraries
+!pip install -q gradio sentence-transformers edge-tts
+
+# Import libraries
+import gradio as gr
+import pandas as pd
+import uuid
+import asyncio
+import shutil
+import edge_tts
+from sentence_transformers import SentenceTransformer, util
+
+# Load Gita dataset
+df = pd.read_csv("bhagavad_gita.csv")  # Upload this file in Colab
+
+# Load model
+model = SentenceTransformer("all-MiniLM-L6-v2")
+verse_embeddings = model.encode(df['meaning_in_english'].tolist(), convert_to_tensor=True)
+
+# Background music path
+bg_music_path = "krishna_bg_music.mp3"  # Upload this mp3 in Colab
+
+# Function to shorten long explanations
+def shorten_explanation(text, max_sentences=2):
+    return '. '.join(text.split('. ')[:max_sentences]).strip() + "."
+
+# Clean any Sanskrit characters from voice output
+import re
+def clean_english(text):
+    return re.sub(r'[^\x00-\x7F]+', ' ', text)
+
+# Generate Krishna voice (only English)
+async def generate_voice(text):
+    voice = "en-IN-PrabhatNeural"
+    filename = f"/content/{uuid.uuid4()}.mp3"
+    communicate = edge_tts.Communicate(text, voice=voice)
+    await communicate.save(filename)
+    return filename
+
+# Duplicate background music to avoid caching
+def get_unique_bgm():
+    unique_path = f"/content/bgm_{uuid.uuid4()}.mp3"
+    shutil.copy(bg_music_path, unique_path)
+    return unique_path
+
+# Core chatbot function
+def versewise_bot(question, play_music):
+    query_embedding = model.encode(question, convert_to_tensor=True)
+    similarity_scores = util.pytorch_cos_sim(query_embedding, verse_embeddings)[0]
+    idx = similarity_scores.argmax().item()
+    verse = df.iloc[idx]
+
+    sanskrit = verse['verse_in_sanskrit']
+    translation = verse['translation_in_english']
+    explanation = shorten_explanation(verse['meaning_in_english'])
+    verse_number = verse['verse_number']
+
+    # Text reply for UI
+    reply = f"""📖 *Bhagavad Gita {verse_number}*
+
+🕉 "{sanskrit[:60]}..."
+
+*"{translation}"*
+
+🕊 {explanation}
+
+🌼 Stay strong — Krishna walks with you."""
+
+    # Voice (translation + explanation only)
+    voice_text = f"{clean_english(translation)}. {clean_english(explanation)}"
+    audio_path = asyncio.run(generate_voice(voice_text))
+
+    music = get_unique_bgm() if play_music else None
+    return reply, audio_path, music
+
+# Gita quote of the day
+def get_quote_of_the_day():
+    verse = df.sample(1).iloc[0]
+    sanskrit = verse['verse_in_sanskrit']
+    translation = verse['translation_in_english']
+    verse_number = verse['verse_number']
+    return f"""<div style="font-size:1.1em;padding:10px 0;"><b>Quote of the Day (Gita {verse_number}):</b><br>
+    <i>{sanskrit[:60]}...</i><br>
+    <span style="color:#2d2d2d;">"{translation}"</span></div>"""
+
+# UI Styling
+custom_css = """
+body, .gradio-container, .gradio-interface, html {
+  background-image: url('https://static.vecteezy.com/system/resources/previews/022/592/272/large_2x/image-of-divine-beautiful-closed-eyes-blue-colored-krishna-generative-ai-free-photo.jpeg') !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-position: center center !important;
+  background-attachment: fixed !important;
+}
+
+
+.gradio-container, .gradio-interface {
+  background-color: rgba(255,255,255,0.92) !important;
+  border-radius: 18px;
+  padding: 25px;
+  max-width: 760px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+  margin: auto;
+}
+
+.gradio-container, .gradio-interface {
+  background-color: rgba(255,255,255,0.92) !important;
+  border-radius: 18px;
+  padding: 25px;
+  max-width: 760px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+  margin: auto;
+}
+
+.gradio-container, .gradio-interface {
+  background-color: rgba(255,255,255,0.90) !important;
+  border-radius: 18px;
+  padding: 25px;
+  max-width: 760px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+@media only screen and (max-width: 768px) {
+  .gradio-container {
+    width: 95% !important;
+    padding: 15px !important;
+  }
+}
+input[type="text"], textarea {
+  font-size: 16px !important;
+}
+"""
+
+# Build Gradio Interface
+interface = gr.Interface(
+    fn=versewise_bot,
+    inputs=[
+        gr.Textbox(label="Ask Krishna", placeholder="Why am I struggling in life?", lines=2),
+        gr.Checkbox(label="Play Background Music", value=True)
+    ],
+    outputs=[
+        gr.Textbox(label="🧘‍♂ Krishna's Answer"),
+        gr.Audio(label="🔊 Listen to Krishna's Voice"),
+        gr.Audio(label="🎶 Background Music", autoplay=True)
+    ],
+    title="🕉 VerseWise - Divine Wisdom from the Gita",
+    description="Ask any question, and receive a Gita verse with Krishna’s loving wisdom.",
+    article=get_quote_of_the_day(),
+    allow_flagging="never",
+    theme="soft",
+    css=custom_css
+)
+
+# Launch app
+interface.launch()
